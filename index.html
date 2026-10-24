@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Skybound Adventure — 50 Levels</title>
+
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#101b40;color:white;text-align:center;font-family:system-ui,sans-serif;user-select:none}
+header{padding:12px}
+h1{margin:0;font-size:clamp(22px,5vw,34px)}
+.game{position:relative;width:min(960px,100%);margin:auto;padding:0 5px}
+canvas{width:100%;height:auto;display:block;border:3px solid white;border-radius:12px;touch-action:none}
+.hud{max-width:950px;margin:10px auto;display:flex;justify-content:center;flex-wrap:wrap;gap:8px;align-items:center;padding:0 8px}
+.pill{background:#0f172a;border:1px solid #ffffff44;border-radius:30px;padding:7px 11px;font-size:14px;font-weight:bold}
+.overlay{position:absolute;inset:0 5px;display:flex;align-items:center;justify-content:center;background:#071126df;padding:12px;border-radius:12px;overflow:auto}
+.panel{background:linear-gradient(145deg,#1d4ed8,#6b21a8);padding:23px 17px;border:2px solid #ffffff55;border-radius:20px;max-width:440px;width:100%;margin:auto}
+.panel h2{margin:0 0 8px;font-size:clamp(24px,5vw,38px)}
+.panel p{line-height:1.5}
+button{border:0;border-radius:12px;padding:11px 15px;font-weight:bold;font-size:15px;background:#facc15;color:#172554;cursor:pointer}
+.controls{max-width:950px;margin:12px auto;display:flex;justify-content:space-between;padding:0 12px 10px}
+.group{display:flex;gap:10px}
+.ctrl{width:64px;height:58px;padding:0;background:#1d4ed8;color:white;border:2px solid #bfdbfe;font-size:22px;touch-action:none}
+.jump{width:88px;background:#be123c}
+.hint{font-size:13px;color:#cbd5e1;padding:0 10px 15px}
+.level-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px;margin:12px 0;max-height:190px;overflow:auto;padding:3px}
+.level-btn{padding:8px 2px;font-size:13px;background:#dbeafe;color:#172554;border:2px solid transparent}
+.level-btn.selected{background:#facc15;border-color:#fff}
+[hidden]{display:none!important}
+</style>
+</head>
+
+<body>
+<header>
+<h1>Pablo Adventures</h1>
+<p>Samahan ang bida nateng si pablo kaka-talon dahil may amats sya at stopball</p>
+</header>
+
+<div class="game">
+<canvas id="game" width="960" height="540"></canvas>
+
+<div class="overlay" id="menu">
+ <div class="panel">
+  <h2>50 Levels Await!</h2>
+  <p>ewan ko sayo</p>
+  <p id="selectedLabel">walang easy easy dito</p>
+  <div class="level-grid" id="levelGrid" aria-label="Pumili ng level"></div>
+  <button id="play">▶ PLAY LEVEL 1</button>
+  <p>Move: A/D o ←/→<br>Jump: Space, W, o ↑</p>
+ </div>
+</div>
+
+<div class="overlay" id="screen" hidden>
+ <div class="panel">
+  <h2 id="screenTitle">Level Complete!</h2>
+  <p id="screenText"></p>
+  <button id="continue">NEXT LEVEL ▶</button>
+  <p><button id="backToMenu">🗺️ LEVEL SELECT</button></p>
+ </div>
+</div>
+</div>
+
+<div class="hud">
+ <span class="pill" id="levelHud">🗺️ Level 1/50</span>
+ <span class="pill" id="difficultyHud">Difficulty: Easy</span>
+ <span class="pill" id="coinHud">🪙 0</span>
+ <span class="pill" id="lifeHud">❤️ 3</span>
+ <span class="pill" id="sizeHud">🙂 Normal</span>
+ <button id="sound">🔊 Sound ON</button>
+</div>
+
+<div class="controls">
+ <div class="group">
+  <button class="ctrl" id="left">◀</button>
+  <button class="ctrl" id="right">▶</button>
+ </div>
+ <button class="ctrl jump" id="jump">JUMP ⤴</button>
+</div>
+
+<p class="hint">Computer: A/D o arrow keys para gumalaw; Space/W/↑ para tumalon. Mobile: gamitin ang buttons.</p>
+
+<script>
+(() => {
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const $=id=>document.getElementById(id);
+const W=960,H=540,WORLD=3000,MAX_LEVEL=50;
+const keys={left:false,right:false,jump:false};
+
+let mode="menu",level=1,selectedLevel=1,coinsFound=0,lives=3;
+let platforms=[],coins=[],mushrooms=[],enemies=[],spikes=[];
+let camera=0,frame=0,soundOn=true,audio=null;
+let bigUntil=0,invulnerableUntil=0;
+
+const hero=new Image();
+hero.src="images/player.png";
+
+const player={
+ x:50,y:380,w:38,h:48,vx:0,vy:0,
+ speed:4.2,jumpPower:13.2,grounded:false
+};
+
+function difficultyFor(n){
+ if(n<=10)return "Easy";
+ if(n<=20)return "Medium";
+ if(n<=35)return "Hard";
+ return "Expert";
+}
+
+function difficulty(){
+ return difficultyFor(level);
+}
+
+function settings(){
+ return {
+  gap:Math.min(100,25+level*1.4),
+  enemyCount:Math.min(12,1+Math.floor(level/4)),
+  enemySpeed:1+level*.055,
+  spikeChance:Math.min(.62,.04+level*.012),
+  jumpPower:13.2
+ };
+}
+
+function beep(freq=500,duration=.08,type="sine"){
+ if(!soundOn)return;
+ try{
+  audio=audio||new(window.AudioContext||window.webkitAudioContext)();
+  if(audio.state==="suspended")audio.resume();
+  const o=audio.createOscillator(),g=audio.createGain();
+  o.type=type;
+  o.frequency.value=freq;
+  g.gain.setValueAtTime(.04,audio.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+duration);
+  o.connect(g);
+  g.connect(audio.destination);
+  o.start();
+  o.stop(audio.currentTime+duration);
+ }catch(e){}
+}
+
+function overlap(a,b){
+ return a.x<b.x+b.w&&a.x+a.w>b.x&&
+ a.y<b.y+b.h&&a.y+a.h>b.y;
+}
+
+function big(){return performance.now()<bigUntil}
+function playerWidth(){return big()?52:38}
+function playerHeight(){return big()?68:48}
+
+function randomGenerator(seed){
+ let s=seed>>>0;
+ return ()=>{
+  s=(s*1664525+1013904223)>>>0;
+  return s/4294967296;
+ };
+}
+
+// Gumagawa ng sariling platform layout para sa bawat level.
+function generateLevel(n){
+ const rand=randomGenerator(n*98731+4567);
+ const cfg={
+  gap:Math.min(100,25+n*1.4),
+  enemyCount:Math.min(12,1+Math.floor(n/4)),
+  enemySpeed:1+n*.055,
+  spikeChance:Math.min(.62,.04+n*.012)
+ };
+
+ platforms=[];
+ coins=[];
+ mushrooms=[];
+ enemies=[];
+ spikes=[];
+
+ platforms.push({x:0,y:490,w:310,h:50});
+
+ let x=310;
+ let previousY=490;
+
+ while(x<WORLD-210){
+  const gap=cfg.gap+rand()*Math.min(35,8+n*.5);
+  x+=gap;
+
+  if(x>WORLD-250)break;
+
+  const width=Math.max(92,190-n*1.25+rand()*55);
+  const heightShift=(rand()-.5)*(10+n*.55);
+  const y=Math.max(255,Math.min(475,previousY+heightShift));
+
+  platforms.push({
+   x:Math.round(x),
+   y:Math.round(y),
+   w:Math.round(width),
+   h:24
+  });
+
+  // Coins
+  const coinCount=1+Math.floor(rand()*2);
+  for(let j=0;j<coinCount;j++){
+   coins.push({
+    x:x+width*(j+1)/(coinCount+1),
+    y:y-35-rand()*12,
+    taken:false,
+    phase:rand()*6
+   });
+  }
+
+  // Extra platform
+  if(n>=5&&rand()<Math.min(.7,.12+n*.012)){
+   const extraX=x+width*.35;
+   const extraY=Math.max(210,y-65-rand()*35);
+   platforms.push({x:extraX,y:extraY,w:75+rand()*35,h:20});
+   coins.push({
+    x:extraX+35,
+    y:extraY-30,
+    taken:false,
+    phase:rand()*6
+   });
+  }
+
+  // Spikes
+  if(n>=8&&rand()<cfg.spikeChance&&width>115){
+   spikes.push({
+    x:x+width*.35,
+    y:y-18,
+    w:Math.min(44,width*.28),
+    h:18
+   });
+  }
+
+  // Enemies
+  if(n>=3&&rand()<Math.min(.92,.18+n*.017)&&width>110){
+   const ex=x+width*.3;
+   enemies.push({
+    x:ex,y:y-30,w:30,h:30,
+    min:x+5,max:x+width-35,
+    vx:cfg.enemySpeed*(rand()<.5?-1:1),
+    alive:true
+   });
+  }
+
+  previousY=y;
+  x+=width;
+ }
+
+ // Finish platform
+ platforms.push({x:WORLD-210,y:490,w:210,h:50});
+
+ // Dagdag enemies kung kaunti ang nabuong enemies
+ while(enemies.length<cfg.enemyCount){
+  const candidates=platforms.filter(p=>
+   p.x>350&&p.x<WORLD-260&&p.w>115
+  );
+
+  if(!candidates.length)break;
+
+  const p=candidates[Math.floor(rand()*candidates.length)];
+  const ex=p.x+Math.min(p.w-35,20+rand()*Math.max(1,p.w-60));
+
+  enemies.push({
+   x:ex,y:p.y-30,w:30,h:30,
+   min:p.x+4,max:p.x+p.w-34,
+   vx:cfg.enemySpeed*(rand()<.5?-1:1),
+   alive:true
+  });
+ }
+
+ // Mushroom power-ups
+ for(let i=0;i<Math.min(3,1+Math.floor(n/15));i++){
+  const candidates=platforms.filter(p=>
+   p.x>380&&p.x<WORLD-250&&p.w>100
+  );
+
+  if(candidates.length){
+   const p=candidates[Math.floor(rand()*candidates.length)];
+   mushrooms.push({
+    x:p.x+p.w*.55,
+    y:p.y-22,
+    taken:false,
+    phase:rand()*6
+   });
+  }
+ }
+
+ if(mushrooms.length===0){
+  mushrooms.push({x:580,y:415,taken:false,phase:0});
+ }
+
+ // Bonus coins tuwing ika-sampung level
+ if(n%10===0){
+  for(let i=0;i<5;i++){
+   coins.push({
+    x:WORLD-360+i*25,
+    y:430-i%2*18,
+    taken:false,
+    phase:rand()*6
+   });
+  }
+ }
+}
+
+function updateHud(){
+ $("levelHud").textContent=`🗺️ Level ${level}/${MAX_LEVEL}`;
+ $("difficultyHud").textContent="Difficulty: "+difficulty();
+ $("coinHud").textContent="🪙 "+coinsFound;
+ $("lifeHud").textContent="❤️ "+lives;
+ $("sizeHud").textContent=big()?"🍄 BIG!":"🙂 Normal";
+}
+
+function renderLevelPicker(){
+ const grid=$("levelGrid");
+ grid.innerHTML="";
+
+ for(let n=1;n<=MAX_LEVEL;n++){
+  const b=document.createElement("button");
+  b.className="level-btn"+(n===selectedLevel?" selected":"");
+  b.textContent=n;
+  b.title="Level "+n+" · "+difficultyFor(n);
+  b.setAttribute("aria-label","Level "+n+" - "+difficultyFor(n));
+
+  b.onclick=()=>{
+   selectedLevel=n;
+   renderLevelPicker();
+  };
+
+  grid.appendChild(b);
+ }
+
+ $("selectedLabel").textContent=
+  "Napili: Level "+selectedLevel+" · "+difficultyFor(selectedLevel);
+ $("play").textContent="▶ PLAY LEVEL "+selectedLevel;
+}
+
+function showMenu(){
+ mode="menu";
+ keys.left=keys.right=keys.jump=false;
+ $("menu").hidden=false;
+ $("screen").hidden=true;
+ renderLevelPicker();
+ draw();
+}
+
+function startGame(){
+ level=selectedLevel;
+ coinsFound=0;
+ lives=3;
+ startLevel();
+}
+
+function startLevel(){
+ generateLevel(level);
+
+ player.x=50;
+ player.y=390;
+ player.vx=0;
+ player.vy=0;
+ player.w=38;
+ player.h=48;
+ player.grounded=false;
+
+ camera=0;
+ bigUntil=0;
+ invulnerableUntil=performance.now()+1200;
+
+ keys.left=keys.right=keys.jump=false;
+ mode="playing";
+
+ $("menu").hidden=true;
+ $("screen").hidden=true;
+
+ updateHud();
+ beep(600,.1);
+ requestAnimationFrame(loop);
+}
+
+function finish(win){
+ if(mode!=="playing")return;
+
+ mode=win?"complete":"gameover";
+
+ $("screenTitle").textContent=win
+  ?(level===MAX_LEVEL?"🏆 YOU BEAT ALL 50 LEVELS!":"🎉 LEVEL "+level+" COMPLETE!")
+  :"💥 GAME OVER";
+
+ $("screenText").textContent=win
+  ?(level===MAX_LEVEL
+    ?`Amazing! Natapos mo ang 50 levels! Coins: ${coinsFound}.`
+    :`Natapos mo ang Level ${level}. Ang susunod ay mas mahirap!`)
+  :`Level ${level} · Coins: ${coinsFound}. Subukan ulit!`;
+
+ $("continue").textContent=
+  win&&level<MAX_LEVEL?"NEXT LEVEL ▶":"PLAY AGAIN ↻";
+
+ $("screen").hidden=false;
+ keys.left=keys.right=keys.jump=false;
+ beep(win?880:150,.25,win?"triangle":"sawtooth");
+}
+
+$("play").onclick=startGame;
+
+$("continue").onclick=()=>{
+ if(mode==="complete"&&level<MAX_LEVEL){
+  level++;
+  selectedLevel=level;
+  startLevel();
+ }else{
+  startGame();
+ }
+};
+
+$("backToMenu").onclick=showMenu;
+
+$("sound").onclick=()=>{
+ soundOn=!soundOn;
+ $("sound").textContent=soundOn?"🔊 Sound ON":"🔇 Sound OFF";
+ if(soundOn)beep(650,.08);
+};
+
+function hurt(){
+ if(performance.now()<invulnerableUntil)return;
+
+ if(big()){
+  bigUntil=0;
+  player.w=38;
+  player.h=48;
+  invulnerableUntil=performance.now()+1200;
+  player.vy=-6;
+  beep(240,.12,"triangle");
+  return;
+ }
+
+ lives--;
+ invulnerableUntil=performance.now()+1500;
+ player.vy=-6;
+ player.x=Math.max(0,player.x-40);
+ beep(160,.2,"sawtooth");
+
+ if(lives<=0){
+  updateHud();
+  finish(false);
+ }
+}
+
+function update(){
+ if(mode!=="playing")return;
+ frame++;
+
+ player.w=playerWidth();
+ player.h=playerHeight();
+
+ player.vx=0;
+ if(keys.left)player.vx=-player.speed;
+ if(keys.right)player.vx=player.speed;
+
+ if(keys.jump&&player.grounded){
+  player.vy=-(big()?14.8:13.2);
+  player.grounded=false;
+  beep(380,.08,"triangle");
+ }
+ keys.jump=false;
+
+ const oldBottom=player.y+player.h;
+
+ player.x+=player.vx;
+ player.x=Math.max(0,Math.min(WORLD-player.w,player.x));
+
+ player.vy=Math.min(player.vy+.58,15);
+ player.y+=player.vy;
+ player.grounded=false;
+
+ for(const p of platforms){
+  if(player.vy>=0&&oldBottom<=p.y+5&&
+     player.y+player.h>=p.y&&
+     player.x+player.w>p.x&&player.x<p.x+p.w){
+   player.y=p.y-player.h;
+   player.vy=0;
+   player.grounded=true;
+  }
+ }
+
+ // Coins
+ for(const c of coins){
+  if(!c.taken&&overlap(player,{x:c.x-10,y:c.y-10,w:20,h:20})){
+   c.taken=true;
+   coinsFound++;
+   beep(900,.07);
+   setTimeout(()=>beep(1150,.08),50);
+  }
+ }
+
+ // Mushroom power-ups
+ for(const m of mushrooms){
+  if(!m.taken&&overlap(player,{x:m.x-13,y:m.y-16,w:26,h:28})){
+   m.taken=true;
+   bigUntil=performance.now()+8000;
+   player.w=playerWidth();
+   player.h=playerHeight();
+   player.y-=18;
+   beep(650,.08,"triangle");
+   setTimeout(()=>beep(850,.08,"triangle"),80);
+   setTimeout(()=>beep(1100,.12,"triangle"),160);
+  }
+ }
+
+ // Spikes
+ for(const s of spikes){
+  if(overlap(player,{x:s.x+3,y:s.y+6,w:s.w-6,h:s.h-6})){
+   hurt();
+   if(mode!=="playing")return;
+  }
+ }
+
+ // Enemies
+ for(const e of enemies){
+  if(!e.alive)continue;
+
+  e.x+=e.vx;
+
+  if(e.x<e.min){
+   e.x=e.min;
+   e.vx=Math.abs(e.vx);
+  }
+
+  if(e.x+e.w>e.max){
+   e.x=e.max-e.w;
+   e.vx=-Math.abs(e.vx);
+  }
+
+  if(overlap(player,e)){
+   if(player.vy>1&&oldBottom<=e.y+15){
+    e.alive=false;
+    player.vy=-8;
+    beep(250,.08,"square");
+   }else if(big()){
+    e.alive=false;
+    player.vy=-4;
+    beep(300,.08,"square");
+   }else{
+    hurt();
+    if(mode!=="playing")return;
+   }
+  }
+ }
+
+ // Kapag nahulog sa ibaba ng screen
+ if(player.y>H+100){
+  lives--;
+
+  if(lives<=0){
+   updateHud();
+   finish(false);
+   return;
+  }
+
+  player.x=Math.max(30,player.x-100);
+  player.y=320;
+  player.vy=0;
+  invulnerableUntil=performance.now()+1500;
+ }
+
+ // FINISH ZONE:
+ // Panalo kapag umabot sa finish area.
+ // Hindi kailangang tumama mismo sa flag.
+ const finishZoneX=WORLD-245;
+ const finishZoneRight=WORLD-40;
+ const playerOnFinishArea=
+  player.x+player.w>=finishZoneX &&
+  player.x<=finishZoneRight &&
+  player.y+player.h>=430 &&
+  player.y<500;
+
+ if(playerOnFinishArea){
+  finish(true);
+  return;
+ }
+
+ camera=Math.max(0,Math.min(WORLD-W,player.x-W*.34));
+ updateHud();
+}
+
+function cloud(x,y,s){
+ ctx.fillStyle="#ffffffdd";
+ ctx.beginPath();
+ ctx.arc(x,y,18*s,0,Math.PI*2);
+ ctx.arc(x+22*s,y-10*s,24*s,0,Math.PI*2);
+ ctx.arc(x+47*s,y,18*s,0,Math.PI*2);
+ ctx.fill();
+}
+
+function drawPlayer(){
+ if(performance.now()<invulnerableUntil&&Math.floor(frame/5)%2===0)return;
+
+ if(hero.complete&&hero.naturalWidth>0){
+  ctx.save();
+  ctx.beginPath();
+  ctx.roundRect(player.x,player.y,player.w,player.h,9);
+  ctx.clip();
+  ctx.drawImage(hero,player.x,player.y,player.w,player.h);
+  ctx.restore();
+
+  ctx.strokeStyle="#fff";
+  ctx.lineWidth=2;
+  ctx.strokeRect(player.x,player.y,player.w,player.h);
+ }else{
+  ctx.fillStyle="#2563eb";
+  ctx.fillRect(player.x+3,player.y+18,player.w-6,player.h-18);
+
+  ctx.fillStyle="#fcd7a1";
+  ctx.fillRect(player.x+4,player.y+2,player.w-8,player.h*.48);
+
+  ctx.fillStyle="#ef4444";
+  ctx.fillRect(player.x+1,player.y-3,player.w-2,10);
+
+  ctx.fillStyle="#172554";
+  ctx.fillRect(player.x+10,player.y+10,4,5);
+  ctx.fillRect(player.x+player.w-14,player.y+10,4,5);
+ }
+
+ if(big()){
+  ctx.strokeStyle="#facc15";
+  ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.ellipse(player.x+player.w/2,player.y+player.h/2,
+   player.w*.7,player.h*.7,0,0,Math.PI*2);
+  ctx.stroke();
+ }
+}
+
+function draw(){
+ const sky=ctx.createLinearGradient(0,0,0,H);
+ sky.addColorStop(0,level>=36?"#312e81":"#38bdf8");
+ sky.addColorStop(1,level>=36?"#7c2d12":"#dbeafe");
+ ctx.fillStyle=sky;
+ ctx.fillRect(0,0,W,H);
+
+ ctx.fillStyle=level>=36?"#4338ca":"#93c5fd";
+
+ for(let i=-1;i<9;i++){
+  const x=i*230-(camera*.18%230);
+  ctx.beginPath();
+  ctx.ellipse(x+90,460,150,100,0,Math.PI,Math.PI*2);
+  ctx.fill();
+ }
+
+ for(let i=-1;i<8;i++){
+  cloud(i*250-(camera*.28%250)+50,80+(i%3)*35,.8);
+ }
+
+ ctx.save();
+ ctx.translate(-camera,0);
+
+ // Platforms
+ for(const p of platforms){
+  ctx.fillStyle="#854d0e";
+  ctx.fillRect(p.x,p.y+6,p.w,p.h);
+
+  ctx.fillStyle=level>=36?"#a3e635":"#22c55e";
+  ctx.fillRect(p.x,p.y,p.w,10);
+
+  ctx.fillStyle="#86efac";
+  for(let x=p.x+8;x<p.x+p.w-5;x+=25){
+   ctx.fillRect(x,p.y+2,8,3);
+  }
+ }
+
+ // Coins
+ for(const c of coins)if(!c.taken){
+  const bob=Math.sin(frame*.08+c.phase)*3;
+  ctx.fillStyle="#facc15";
+  ctx.beginPath();
+  ctx.ellipse(c.x,c.y+bob,9,12,0,0,Math.PI*2);
+  ctx.fill();
+  ctx.strokeStyle="#fff7ae";
+  ctx.lineWidth=2;
+  ctx.stroke();
+ }
+
+ // Mushrooms
+ for(const m of mushrooms)if(!m.taken){
+  const bob=Math.sin(frame*.09+m.phase)*3;
+  const x=m.x,y=m.y+bob;
+
+  ctx.fillStyle="#ef4444";
+  ctx.beginPath();
+  ctx.arc(x,y-5,15,Math.PI,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#fff";
+  ctx.beginPath();
+  ctx.arc(x-6,y-10,3,0,Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x+5,y-13,3,0,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#fef3c7";
+  ctx.fillRect(x-8,y-5,16,15);
+
+  ctx.fillStyle="#172554";
+  ctx.fillRect(x-4,y+2,3,3);
+  ctx.fillRect(x+3,y+2,3,3);
+ }
+
+ // Spikes
+ for(const s of spikes){
+  ctx.fillStyle="#64748b";
+  for(let x=s.x;x<s.x+s.w;x+=12){
+   ctx.beginPath();
+   ctx.moveTo(x,s.y+s.h);
+   ctx.lineTo(x+6,s.y);
+   ctx.lineTo(x+12,s.y+s.h);
+   ctx.fill();
+  }
+ }
+
+ // Enemies
+ for(const e of enemies)if(e.alive){
+  ctx.fillStyle="#15803d";
+  ctx.beginPath();
+  ctx.roundRect(e.x,e.y+7,e.w,e.h-7,12);
+  ctx.fill();
+
+  ctx.fillStyle="#4ade80";
+  ctx.beginPath();
+  ctx.ellipse(e.x+e.w/2,e.y+10,e.w/2,10,0,Math.PI,Math.PI*2);
+  ctx.fill();
+
+  ctx.fillStyle="#052e16";
+  ctx.fillRect(e.x+8,e.y+15,4,6);
+  ctx.fillRect(e.x+22,e.y+15,4,6);
+
+  ctx.fillStyle="#fff";
+  ctx.fillRect(e.x+9,e.y+15,2,2);
+  ctx.fillRect(e.x+23,e.y+15,2,2);
+ }
+
+ // Finish flag
+ const fx=WORLD-155;
+
+ ctx.fillStyle="#475569";
+ ctx.fillRect(fx,405,7,85);
+
+ ctx.fillStyle="#fb7185";
+ ctx.beginPath();
+ ctx.moveTo(fx+7,407);
+ ctx.lineTo(fx+55,422);
+ ctx.lineTo(fx+7,440);
+ ctx.fill();
+
+ ctx.fillStyle="#fff";
+ ctx.font="bold 15px system-ui";
+ ctx.fillText("LEVEL "+level,fx-15,395);
+
+ // Invisible finish zone marker for visual guidance
+ ctx.fillStyle="#ffffff18";
+ ctx.fillRect(WORLD-245,490,205,50);
+
+ drawPlayer();
+ ctx.restore();
+
+ ctx.fillStyle="#fff";
+ ctx.font="bold 18px system-ui";
+ ctx.textAlign="left";
+ ctx.fillText("LEVEL "+level+" / "+MAX_LEVEL,18,28);
+
+ if(big()){
+  ctx.textAlign="center";
+  ctx.fillText("🍄 BIG POWER!",W/2,30);
+ }
+}
+
+function loop(){
+ if(mode!=="playing")return;
+ update();
+ draw();
+
+ if(mode==="playing")requestAnimationFrame(loop);
+}
+
+function setKey(e,down){
+ const k=e.key.toLowerCase();
+
+ if(["arrowleft","arrowright","arrowup"," "].includes(k)){
+  e.preventDefault();
+ }
+
+ if(k==="arrowleft"||k==="a")keys.left=down;
+ if(k==="arrowright"||k==="d")keys.right=down;
+ if(k==="arrowup"||k==="w"||k===" ")keys.jump=down;
+}
+
+window.addEventListener("keydown",e=>setKey(e,true),{passive:false});
+window.addEventListener("keyup",e=>setKey(e,false),{passive:false});
+window.addEventListener("blur",()=>{keys.left=keys.right=keys.jump=false});
+
+function bindHold(id,key){
+ const b=$(id);
+
+ b.addEventListener("pointerdown",e=>{
+  e.preventDefault();
+  keys[key]=true;
+  try{b.setPointerCapture(e.pointerId)}catch(_){}
+ });
+
+ const up=e=>{
+  e.preventDefault();
+  keys[key]=false;
+ };
+
+ b.addEventListener("pointerup",up);
+ b.addEventListener("pointercancel",up);
+ b.addEventListener("lostpointercapture",()=>keys[key]=false);
+}
+
+bindHold("left","left");
+bindHold("right","right");
+
+$("jump").addEventListener("pointerdown",e=>{
+ e.preventDefault();
+ keys.jump=true;
+});
+
+$("jump").addEventListener("pointerup",e=>{
+ e.preventDefault();
+ keys.jump=false;
+});
+
+$("jump").addEventListener("pointercancel",()=>keys.jump=false);
+
+generateLevel(1);
+renderLevelPicker();
+updateHud();
+draw();
+})();
+</script>
+</body>
+</html>
